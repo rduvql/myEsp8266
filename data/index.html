@@ -6,81 +6,20 @@
     <title>Document</title>
 </head>
     <head>
-        <meta charset='utf-8'>
-        <meta http-equiv='X-UA-Compatible' content='IE=edge'>
+        <meta charset="utf-8">
+        <meta http-equiv="X-UA-Compatible" content="IE=edge">
         <title>Page Title</title>
-        <meta name='viewport' content='width=device-width, initial-scale=1'>
-
-        <style>
-            body {
-                margin: 0 auto;
-                max-width: 50em;
-                font-family: "Helvetica", "Arial", sans-serif;
-                line-height: 1.5;
-                padding: 4em 1em;
-                color: #566b78;
-            }
-            h1, h2, strong {
-                color: #333;
-            }
-            a {
-                color: #e81c4f;
-            }
-
-            .switch {
-                -webkit-appearance: none;
-                -moz-appearance: none;
-                appearance: none;
-                position: absolute;
-                width: 4em;
-                height: 2em;
-                font-size: 1em;
-                border: 4px solid #dedede;
-                border-radius: 2em;
-                transition: all 0.2s ease;
-              }
-              .switch:after {
-                position: absolute;
-                content: "";
-                width: 1.4em;
-                height: 1.4em;
-                margin: 0.05em;
-                border-radius: 50%;
-                background-color: #dedede;
-                transition: all 0.2s ease;
-              }
-              .switch:checked {
-                border: 4px solid #7fc6a6;
-              }
-              .switch:checked:after {
-                background-color: #7fc6a6;
-                -webkit-transform: translate(2em, 0);
-                        transform: translate(2em, 0);
-              }
-
-
-        </style>
-
-        <script type="application/javascript">
-            /**
-             * @param input {HTMLInputElement}
-             */
-            function request(input){
-                let status = input.checked ? "ON" :"OFF";
-
-                fetch(`/${input.id}=${status}`, {
-                    method: "POST"
-                })
-                .then((response) => {
-                    response.text().then(v => {
-                        console.log(v)
-                    })
-                });
-            }
-        </script>
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <link rel="stylesheet" href="https://unpkg.com/@picocss/pico@latest/css/pico.min.css">
+        <link rel="stylesheet" href="style.css">
+        <script type="text/javascript" src="script.js"></script>
     </head>
+    
     <body>
-        <label for="D1"> D1 </label>
-        <input id="D1" type="checkbox" class="switch" onclick="request(this)"/>
+        <div class="container">
+
+            <label for="D1"> D1 </label>
+            <input id="D1" class="switch" type="checkbox" onclick="request(this)">
+        </div>
     </body>
 </html>

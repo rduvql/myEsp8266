@@ -9,6 +9,16 @@
         "*.html": "html",
         "*.svelte": "svelte",
         "*.cf": "NGINX",
+        "*.cfg": "python",
+        "*.txt": "plaintext",
+        "hosts": "true",
+        "interfaces": "ssh_config",
+        "sudoers": "ssh_config",
+        "sshd_config": "ssh_config",
+        "ssh_config": "ssh_config",
+        "*.qml": "qml",
+        "bashrc": "shellscript",
+        ".hadolint": "yaml",
         "array": "cpp",
         "*.tcc": "cpp",
         "deque": "cpp",
@@ -19,6 +29,8 @@
         "memory": "cpp",
         "random": "cpp",
         "initializer_list": "cpp",
-        "functional": "cpp"
-    }
+        "functional": "cpp",
+        "typeinfo": "cpp"
+    },
+    "liveServer.settings.port": 5501
 }
