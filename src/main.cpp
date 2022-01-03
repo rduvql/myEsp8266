@@ -1,3 +1,6 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 #include <ESP8266WiFi.h>
 #include <ESPAsyncTCP.h>
 #include <ESPAsyncWebServer.h>
@@ -18,12 +21,24 @@
 // DHT dht(PIN_DHT, DHTTYPE);
 
 #define ESP_ID 31
+#define ESP_NAME_ID "esp31"
+#define ESP_TAG "#baie_vitre"
 
-#define TOPIC_ACTION "esp/led/mainroom/action"
-#define TOPIC_COLOR "esp/led/mainroom/color"
+#define IS_LED true
+#define IS_TEMP_SENSOR false
 
-#define TOPIC_G_ACTION "g/esp/led/action"
-#define TOPIC_G_COLOR "g/esp/led/color"
+#define TOPIC_LED_ACTION "esp/led/mainroom/action/+"
+#define TOPIC_LED_ID_ACTION "esp/led/31/action/+"
+#define TOPIC_LED_G_ACTION "esp/led/__global__/action/+"
+
+#define TOPIC_LED_COLOR "esp/led/mainroom/color"
+#define TOPIC_LED_ID_COLOR "esp/led/31/color"
+#define TOPIC_LED_G_COLOR "esp/led/__global__/color"
+
+#define TOPIC_ESP_PING "ping/esp"
+#define TOPIC_ESP_LED_PONG_ID "pong/esp/led/mainroom/31"
+#define TOPIC_ESP_TEMP_SENSOR_PONG_ID "pong/esp/temp_sensor/mainroom/31"
+
 
 char *wifiSsid = "changeme";
 char *wifiPassword = "changeme";
@@ -32,39 +47,47 @@ IPAddress wifiGatewayIp(192, 168, 1, 1);
 IPAddress wifiSubnet(255, 255, 255, 0);
 IPAddress wifiDns(8, 8, 8, 8);
 
-char *mqttHost = "192.168.1.11";
+char *mqttHost = "192.168.1.11"; // need to stay char*, string.c_str not working
 uint16_t mqttPort = 1883;
 
 AsyncMqttClient mqttClient;
-// /!\ declare this variable AFTER mqttClient or else asyncWebServer is not reachable by browsers ...
-AsyncWebServer webServer(80);
+AsyncWebServer webServer(80); // /!\ declare this variable AFTER mqttClient or else asyncWebServer is not reachable by browsers ...
 
 
-bool eq(char *str1, char *str2) {
+//
+// UTILS
+//
+
+
+static bool eq(char *str1, char *str2) {
     return strcmp(str1, str2) == 0;
 }
-
+static bool endsWith(const std::string &str, const std::string &suffix) {
+    return str.size() >= suffix.size() && 0 == str.compare(str.size()-suffix.size(), suffix.size(), suffix);
+}
+static bool startsWith(const std::string &str, const std::string &prefix) {
+    return str.size() >= prefix.size() && 0 == str.compare(0, prefix.size(), prefix);
+}
 
 //
 // WIFI
 //
 void setupWifi() {
+    Serial.println("[setupWifi] init");
 
     WiFi.config(wifiStaticIp, wifiGatewayIp, wifiSubnet, wifiDns);
-    WiFi.hostname("esp8266_31");
+    WiFi.hostname(ESP_NAME_ID);
     WiFi.mode(WIFI_STA);
 
     WiFi.begin(wifiSsid, wifiPassword);
 
     if (WiFi.waitForConnectResult() != WL_CONNECTED) {
-
         delay(500);
-        Serial.printf("WiFi Failed!\n");
+        Serial.println("[setupWifi] Failed!");
         return;
     }
-    Serial.print("IP Address: ");
-    Serial.println(WiFi.localIP());
-    Serial.println("wifi setup - ok");
+    Serial.printf("[setupWifi] IP Address: %s\n", WiFi.localIP().toString().c_str());
+    Serial.println("[setupWifi] ok");
 }
 
 
@@ -72,11 +95,12 @@ void setupWifi() {
 // µServer
 //
 void setupServer() {
-    
+    Serial.println("[setupServer] init");
+
     webServer.serveStatic("/", SPIFFS, "/"); //.setDefaultFile("index.html");
 
-    webServer.on("/", HTTP_GET, [](AsyncWebServerRequest *request) { 
-        request->send(SPIFFS, "/index.html", "text/html", false); 
+    webServer.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
+        request->send(SPIFFS, "/index.html", "text/html", false);
     });
 
     webServer.on("/info", HTTP_GET, [](AsyncWebServerRequest *request) {
@@ -84,22 +108,22 @@ void setupServer() {
         // StaticJsonDocument<512> doc;
         // JsonObject object = doc.to<JsonObject>();
         // object["hello"] = "world";
-        
-        AsyncJsonResponse * response = new AsyncJsonResponse();
+
+        AsyncJsonResponse *response = new AsyncJsonResponse();
         JsonVariant &json = response->getRoot();
         json["heap"] = ESP.getFreeHeap();
         json["ssid"] = WiFi.SSID();
-        
+
         response->setLength();
         request->send(response);
     });
 
-    webServer.onNotFound([](AsyncWebServerRequest *request) { 
-        request->send(404, "text/plain", "Not found"); 
+    webServer.onNotFound([](AsyncWebServerRequest *request) {
+        request->send(404, "text/plain", "Not found");
     });
 
     webServer.begin();
-    Serial.println("server setup - ok");
+    Serial.println("[setupServer] ok");
 }
 
 
@@ -107,48 +131,71 @@ void setupServer() {
 // MQTT
 //
 void setupMQTT() {
+    Serial.println("[setupMQTT] init");
 
     mqttClient.setServer(mqttHost, mqttPort);
-    mqttClient.setClientId("esp 31");
+    mqttClient.setClientId(ESP_NAME_ID);
 
     mqttClient.onMessage( [](char *topic, char *payload, AsyncMqttClientMessageProperties properties, size_t len, size_t index, size_t total) {
 
-        Serial.println("message: ");
-        Serial.println(topic);
+        Serial.printf("[mqttClient][onMessage]: topic: %s\n", topic);
         Serial.println(payload);
 
-        if(eq(topic, TOPIC_ACTION) || eq(topic, TOPIC_G_ACTION)) {
+        std::string _topic(topic);
 
-            if(eq(payload, "on")) {
+        StaticJsonDocument<256> doc;
 
+        doc["is_led"] = true;
+
+        if(_topic == TOPIC_ESP_PING) {
+            if(IS_LED) {
+                mqttClient.publish(TOPIC_ESP_LED_PONG_ID, QOS0, false, "");
             }
-            if(eq(payload, "off")) {
-
+            if(IS_TEMP_SENSOR) {
+                mqttClient.publish(TOPIC_ESP_TEMP_SENSOR_PONG_ID, QOS0, false, "");
             }
-            return;
         }
 
-        if(eq(topic, TOPIC_COLOR) || eq(topic, TOPIC_G_COLOR)) {
+        if(startsWith(_topic, "esp/led")) {
 
-            return;
+            if(endsWith(_topic, "/action/on")) {
+                Serial.println("turning on");
+            }
+            if(endsWith(_topic, "/action/off")) {
+                Serial.println("turning off");
+            }
+            if(endsWith(_topic, "/color")) {
+                Serial.println("changing led color");
+            }
         }
     });
 
     mqttClient.onConnect([](bool sessionPresent) {
 
-        Serial.printf("subscribing to %s\n", TOPIC_ACTION);
-        mqttClient.subscribe(TOPIC_ACTION, QOS0);
-        mqttClient.subscribe(TOPIC_G_ACTION, QOS0);
+        Serial.println("[mqttClient][onConnect] connected to mqtt server");
 
-        // char* colortopic = strcat(topic, "color");
-        Serial.printf("subscribing to %s\n", TOPIC_COLOR);
-        mqttClient.subscribe(TOPIC_COLOR, QOS0);
-        mqttClient.subscribe(TOPIC_G_COLOR, QOS0); 
+        mqttClient.subscribe(TOPIC_ESP_PING, QOS0);
+
+        if(IS_LED) {
+            Serial.println("[mqttClient][onConnect] subscribing to LED topics");
+
+            mqttClient.subscribe(TOPIC_LED_ACTION, QOS0);
+            mqttClient.subscribe(TOPIC_LED_ID_ACTION, QOS0);
+            mqttClient.subscribe(TOPIC_LED_G_ACTION, QOS0);
+            
+            mqttClient.subscribe(TOPIC_LED_COLOR, QOS0);
+            mqttClient.subscribe(TOPIC_LED_ID_COLOR, QOS0);
+            mqttClient.subscribe(TOPIC_LED_G_COLOR, QOS0);
+        }
+
+        if(IS_TEMP_SENSOR) {
+            // TODO
+        }
     });
 
     mqttClient.connect();
 
-    Serial.println("mqtt setup - ok");
+    Serial.println("[setupMQTT] ok");
 }
 
 
@@ -159,10 +206,9 @@ void setup() {
 
     Serial.begin(9600);
     Serial.println();
-    Serial.println("Starting ...");
+    Serial.println("[setup] init");
 
-    if (!SPIFFS.begin())
-    {
+    if (!SPIFFS.begin()) {
         Serial.println("An Error has occurred while mounting SPIFFS");
         return;
     }
@@ -177,12 +223,11 @@ void setup() {
     setupServer();
     setupMQTT();
 
-    Serial.println("setup complete.");
+    Serial.println("[setup] complete.");
 }
 
 void loop()
 {
-    mqttClient.publish("esp/led/mainroom/31", QOS0, true, "");
 }
 
 // char* concat(char* str1, char* str2) {
