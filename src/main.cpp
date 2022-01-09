@@ -8,6 +8,7 @@
 #include <string.h>
 #include "ArduinoJson.h"
 #include "AsyncJson.h"
+#include "LittleFS.h"
 
 #define QOS0 0 // at most once
 #define QOS1 1 // at least once
@@ -22,7 +23,7 @@
 
 #define ESP_ID 31
 #define ESP_NAME_ID "esp31"
-#define ESP_TAG "#baie_vitre"
+#define ESP_TAG "baie_vitre"
 
 #define IS_LED true
 #define IS_TEMP_SENSOR false
@@ -57,8 +58,6 @@ AsyncWebServer webServer(80); // /!\ declare this variable AFTER mqttClient or e
 //
 // UTILS
 //
-
-
 static bool eq(char *str1, char *str2) {
     return strcmp(str1, str2) == 0;
 }
@@ -97,10 +96,10 @@ void setupWifi() {
 void setupServer() {
     Serial.println("[setupServer] init");
 
-    webServer.serveStatic("/", SPIFFS, "/"); //.setDefaultFile("index.html");
+    webServer.serveStatic("/", LittleFS, "/"); //.setDefaultFile("index.html");
 
     webServer.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
-        request->send(SPIFFS, "/index.html", "text/html", false);
+        request->send(LittleFS, "/index.html", "text/html", false);
     });
 
     webServer.on("/info", HTTP_GET, [](AsyncWebServerRequest *request) {
@@ -116,6 +115,11 @@ void setupServer() {
 
         response->setLength();
         request->send(response);
+    });
+
+    webServer.on("/wifi-disconnect", [](AsyncWebServerRequest *request) {
+        request->send(200);
+        WiFi.disconnect();
     });
 
     webServer.onNotFound([](AsyncWebServerRequest *request) {
@@ -182,7 +186,7 @@ void setupMQTT() {
             mqttClient.subscribe(TOPIC_LED_ACTION, QOS0);
             mqttClient.subscribe(TOPIC_LED_ID_ACTION, QOS0);
             mqttClient.subscribe(TOPIC_LED_G_ACTION, QOS0);
-            
+
             mqttClient.subscribe(TOPIC_LED_COLOR, QOS0);
             mqttClient.subscribe(TOPIC_LED_ID_COLOR, QOS0);
             mqttClient.subscribe(TOPIC_LED_G_COLOR, QOS0);
@@ -208,8 +212,8 @@ void setup() {
     Serial.println();
     Serial.println("[setup] init");
 
-    if (!SPIFFS.begin()) {
-        Serial.println("An Error has occurred while mounting SPIFFS");
+    if (!LittleFS.begin()) {
+        Serial.println("An Error has occurred while mounting LittleFS");
         return;
     }
 
