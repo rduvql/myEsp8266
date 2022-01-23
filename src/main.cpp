@@ -5,21 +5,17 @@
 #include <ESPAsyncTCP.h>
 #include <ESPAsyncWebServer.h>
 #include <AsyncMqttClient.h>
-#include <string.h>
 #include "ArduinoJson.h"
 #include "AsyncJson.h"
 #include "LittleFS.h"
+#include "Ticker.h"
 
-#define QOS0 0 // at most once
-#define QOS1 1 // at least once
-#define QOS2 2 // exactly once
-
-// #define PIN_PIR D8
-// #define PIN_LED D2
-// #define PIN_DHT D7
-
-// #define DHTTYPE DHT22
-// DHT dht(PIN_DHT, DHTTYPE);
+#define FASTLED_ALLOW_INTERRUPTS 0
+// #define FASTLED_INTERRUPT_RETRY_COUNT 0
+#define FASTLED_ESP8266_RAW_PIN_ORDER
+// #define FASTLED_ESP8266_NODEMCU_PIN_ORDER
+// #define FASTLED_ESP8266_D1_PIN_ORDER
+#include "FastLED.h"
 
 #define ESP_ID 31
 #define ESP_NAME_ID "esp31"
@@ -27,6 +23,11 @@
 
 #define IS_LED true
 #define IS_TEMP_SENSOR false
+
+#define NUM_LEDS    2
+#define BRIGHTNESS  10
+#define LED_TYPE    WS2812B
+#define COLOR_ORDER GRB
 
 #define TOPIC_LED_ACTION "esp/led/mainroom/action/+"
 #define TOPIC_LED_ID_ACTION "esp/led/31/action/+"
@@ -40,32 +41,55 @@
 #define TOPIC_ESP_LED_PONG_ID "pong/esp/led/mainroom/31"
 #define TOPIC_ESP_TEMP_SENSOR_PONG_ID "pong/esp/temp_sensor/mainroom/31"
 
+// 
+// 
+// 
 
-char *wifiSsid = "changeme";
-char *wifiPassword = "changeme";
-IPAddress wifiStaticIp(192, 168, 1, ESP_ID);
-IPAddress wifiGatewayIp(192, 168, 1, 1);
+// D2 is builtin led
+#define PIN_LED D1
+
+#define QOS0 0 // at most once
+#define QOS1 1 // at least once
+#define QOS2 2 // exactly once
+
+// 
+// 
+// 
+
+char *wifiSsid = "";
+char *wifiPassword = "";
+IPAddress wifiStaticIp(192, 168, 0, ESP_ID);
+IPAddress wifiGatewayIp(192, 168, 0, 1);
 IPAddress wifiSubnet(255, 255, 255, 0);
 IPAddress wifiDns(8, 8, 8, 8);
 
-char *mqttHost = "192.168.1.11"; // need to stay char*, string.c_str not working
+char *mqttHost = "192.168.0.11"; // need to stay char*, string.c_str not working
 uint16_t mqttPort = 1883;
 
 AsyncMqttClient mqttClient;
 AsyncWebServer webServer(80); // /!\ declare this variable AFTER mqttClient or else asyncWebServer is not reachable by browsers ...
+AsyncWebSocket ws("/ws");
 
+Ticker ticker;
+
+CRGB leds[NUM_LEDS];
+CRGB lastCRGB(0,0,0);
 
 //
 // UTILS
 //
+
 static bool eq(char *str1, char *str2) {
     return strcmp(str1, str2) == 0;
+}
+static bool startsWith(const std::string &str, const std::string &prefix) {
+    return str.size() >= prefix.size() && 0 == str.compare(0, prefix.size(), prefix);
 }
 static bool endsWith(const std::string &str, const std::string &suffix) {
     return str.size() >= suffix.size() && 0 == str.compare(str.size()-suffix.size(), suffix.size(), suffix);
 }
-static bool startsWith(const std::string &str, const std::string &prefix) {
-    return str.size() >= prefix.size() && 0 == str.compare(0, prefix.size(), prefix);
+static bool isTopicMatching(const std::string &str, const std::string &prefix, const std::string &suffix) {
+    return startsWith(str, prefix) && endsWith(str, suffix);
 }
 
 //
@@ -110,7 +134,13 @@ void setupServer() {
 
         AsyncJsonResponse *response = new AsyncJsonResponse();
         JsonVariant &json = response->getRoot();
-        json["heap"] = ESP.getFreeHeap();
+        
+        uint32_t hfree; uint16_t hmax; uint8_t hfrag;
+        ESP.getHeapStats(&hfree, &hmax, &hfrag);
+        json["heap_free"] = hfree;
+        json["heap_max"] = hmax;
+        json["heap_frag"] = hfrag;
+        json["cpu_mhz"] = ESP.getCpuFreqMHz();
         json["ssid"] = WiFi.SSID();
 
         response->setLength();
@@ -126,7 +156,11 @@ void setupServer() {
         request->send(404, "text/plain", "Not found");
     });
 
+    webServer.addHandler(&ws);
+
     webServer.begin();
+    // ws.cleanupClients();
+
     Serial.println("[setupServer] ok");
 }
 
@@ -143,7 +177,7 @@ void setupMQTT() {
     mqttClient.onMessage( [](char *topic, char *payload, AsyncMqttClientMessageProperties properties, size_t len, size_t index, size_t total) {
 
         Serial.printf("[mqttClient][onMessage]: topic: %s\n", topic);
-        Serial.println(payload);
+        // Serial.println(payload);
 
         std::string _topic(topic);
 
@@ -160,17 +194,27 @@ void setupMQTT() {
             }
         }
 
-        if(startsWith(_topic, "esp/led")) {
+        if(isTopicMatching(_topic, "esp/led", "/action/on")) {
+            Serial.println("turning on");
+            // ws.textAll("turning on");
+        }
+        if(isTopicMatching(_topic, "esp/led", "/action/off")) {
+            Serial.println("turning off");
+            // ws.textAll("turning off");
 
-            if(endsWith(_topic, "/action/on")) {
-                Serial.println("turning on");
-            }
-            if(endsWith(_topic, "/action/off")) {
-                Serial.println("turning off");
-            }
-            if(endsWith(_topic, "/color")) {
-                Serial.println("changing led color");
-            }
+            FastLED.clear();
+            FastLED.show();
+        }
+        if(isTopicMatching(_topic, "esp/led", "/color")) {
+            Serial.println("changing led color");
+            Serial.printf("%s\n", payload); // weird payload with serial. sent 00ffff; received 00ffff@�x␂␌␂�␁␐
+
+            int r, g, b;
+            sscanf(payload, "%02x%02x%02x", &r, &g, &b);
+
+            Serial.printf("r: %d, g: %d, b: %d\n", r, g, b);
+
+            FastLED.showColor(CRGB(r,g,b));
         }
     });
 
@@ -203,6 +247,29 @@ void setupMQTT() {
 }
 
 
+// 
+// LEDs
+// 
+void setupLeds() {
+    Serial.println("[setupLeds] init");
+
+    FastLED.addLeds<LED_TYPE, PIN_LED, COLOR_ORDER>(leds, NUM_LEDS);
+    FastLED.setBrightness(BRIGHTNESS);
+
+    Serial.println("[setupLeds] complete.");
+}
+
+
+//
+// TICKERS
+//
+void setupTickers() {
+
+    ticker.attach(10, []() {
+        Serial.println("[setupTickers] tick.");
+    });
+}
+
 //
 // MAIN
 //
@@ -226,12 +293,17 @@ void setup() {
     setupWifi();
     setupServer();
     setupMQTT();
+    setupTickers();
+    if(IS_LED) {
+        setupLeds();
+    }
 
     Serial.println("[setup] complete.");
 }
 
-void loop()
-{
+void loop() {
+    // delay(1000);
+    // ws.textAll("loop");
 }
 
 // char* concat(char* str1, char* str2) {
