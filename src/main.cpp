@@ -1,3 +1,4 @@
+#include <iostream>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -8,7 +9,8 @@
 #include "ArduinoJson.h"
 #include "AsyncJson.h"
 #include "LittleFS.h"
-#include "Ticker.h"
+// #include "Ticker.h"
+#include "DHT.h"
 
 #define FASTLED_ALLOW_INTERRUPTS 0
 // #define FASTLED_INTERRUPT_RETRY_COUNT 0
@@ -17,29 +19,36 @@
 // #define FASTLED_ESP8266_D1_PIN_ORDER
 #include "FastLED.h"
 
+// 
+// 
+// 
+
 #define ESP_ID 31
 #define ESP_NAME_ID "esp31"
 #define ESP_TAG "baie_vitre"
 
 #define IS_LED true
-#define IS_TEMP_SENSOR false
+#define IS_DHT false
 
-#define NUM_LEDS    2
-#define BRIGHTNESS  10
+#define NUM_LEDS    10
+#define BRIGHTNESS  16 // MAX 255
 #define LED_TYPE    WS2812B
 #define COLOR_ORDER GRB
 
-#define TOPIC_LED_ACTION "esp/led/mainroom/action/+"
-#define TOPIC_LED_ID_ACTION "esp/led/31/action/+"
-#define TOPIC_LED_G_ACTION "esp/led/__global__/action/+"
+#define TOPIC_LED_ID "esp/led/31/+"
+#define TOPIC_LED_ROOM "esp/led/mainroom/+"
+#define TOPIC_LED_G "esp/led/__global__/+"
 
-#define TOPIC_LED_COLOR "esp/led/mainroom/color"
-#define TOPIC_LED_ID_COLOR "esp/led/31/color"
-#define TOPIC_LED_G_COLOR "esp/led/__global__/color"
+#define TOPIC_LED_ACTION_ON "/on"
+#define TOPIC_LED_ACTION_OFF "/off"
+#define TOPIC_LED_ACTION_COLOR "/color"
+#define TOPIC_LED_ACTION_BRIGHTNESS "/brightness"
+
+#define TOPIC_DHT_ID_TEMP "esp/dht/31/temp"
 
 #define TOPIC_ESP_PING "ping/esp"
 #define TOPIC_ESP_LED_PONG_ID "pong/esp/led/mainroom/31"
-#define TOPIC_ESP_TEMP_SENSOR_PONG_ID "pong/esp/temp_sensor/mainroom/31"
+#define TOPIC_ESP_DHT_PONG_ID "pong/esp/dht/mainroom/31"
 
 // 
 // 
@@ -47,6 +56,7 @@
 
 // D2 is builtin led
 #define PIN_LED D1
+#define PIN_DHT D4
 
 #define QOS0 0 // at most once
 #define QOS1 1 // at least once
@@ -56,8 +66,8 @@
 // 
 // 
 
-char *wifiSsid = "";
-char *wifiPassword = "";
+char *wifiSsid = "changeme";
+char *wifiPassword = "changeme";
 IPAddress wifiStaticIp(192, 168, 0, ESP_ID);
 IPAddress wifiGatewayIp(192, 168, 0, 1);
 IPAddress wifiSubnet(255, 255, 255, 0);
@@ -70,10 +80,11 @@ AsyncMqttClient mqttClient;
 AsyncWebServer webServer(80); // /!\ declare this variable AFTER mqttClient or else asyncWebServer is not reachable by browsers ...
 AsyncWebSocket ws("/ws");
 
-Ticker ticker;
-
 CRGB leds[NUM_LEDS];
-CRGB lastCRGB(0,0,0);
+
+DHT dht(PIN_DHT, DHT22);
+char* dhtTemp = "0.00";
+char* dhtHumidity = "0.00";
 
 //
 // UTILS
@@ -90,6 +101,13 @@ static bool endsWith(const std::string &str, const std::string &suffix) {
 }
 static bool isTopicMatching(const std::string &str, const std::string &prefix, const std::string &suffix) {
     return startsWith(str, prefix) && endsWith(str, suffix);
+}
+
+char* charConcat(char* str1, char* str2) {
+    char* concatenated = (char*)malloc(strlen(str1)+strlen(str2));
+    strcpy(str1, concatenated);
+    strcat(concatenated, str2);
+    return concatenated;
 }
 
 //
@@ -189,29 +207,30 @@ void setupMQTT() {
             if(IS_LED) {
                 mqttClient.publish(TOPIC_ESP_LED_PONG_ID, QOS0, false, "");
             }
-            if(IS_TEMP_SENSOR) {
-                mqttClient.publish(TOPIC_ESP_TEMP_SENSOR_PONG_ID, QOS0, false, "");
+            if(IS_DHT) {
+                mqttClient.publish(TOPIC_ESP_DHT_PONG_ID, QOS0, false, "");
+                mqttClient.publish("esp/dht/31/temp", QOS0, false, dhtTemp);
+                mqttClient.publish("esp/dht/31/humidity", QOS0, false, dhtHumidity);
             }
         }
 
-        if(isTopicMatching(_topic, "esp/led", "/action/on")) {
+        if(isTopicMatching(_topic, "esp/led", TOPIC_LED_ACTION_ON)) {
             Serial.println("turning on");
+            FastLED.showColor(CRGB(255,255,255));
             // ws.textAll("turning on");
         }
-        if(isTopicMatching(_topic, "esp/led", "/action/off")) {
+        if(isTopicMatching(_topic, "esp/led", TOPIC_LED_ACTION_OFF)) {
             Serial.println("turning off");
             // ws.textAll("turning off");
-
             FastLED.clear();
             FastLED.show();
         }
-        if(isTopicMatching(_topic, "esp/led", "/color")) {
+        if(isTopicMatching(_topic, "esp/led", TOPIC_LED_ACTION_COLOR)) {
             Serial.println("changing led color");
             Serial.printf("%s\n", payload); // weird payload with serial. sent 00ffff; received 00ffff@�x␂␌␂�␁␐
 
             int r, g, b;
             sscanf(payload, "%02x%02x%02x", &r, &g, &b);
-
             Serial.printf("r: %d, g: %d, b: %d\n", r, g, b);
 
             FastLED.showColor(CRGB(r,g,b));
@@ -227,18 +246,14 @@ void setupMQTT() {
         if(IS_LED) {
             Serial.println("[mqttClient][onConnect] subscribing to LED topics");
 
-            mqttClient.subscribe(TOPIC_LED_ACTION, QOS0);
-            mqttClient.subscribe(TOPIC_LED_ID_ACTION, QOS0);
-            mqttClient.subscribe(TOPIC_LED_G_ACTION, QOS0);
-
-            mqttClient.subscribe(TOPIC_LED_COLOR, QOS0);
-            mqttClient.subscribe(TOPIC_LED_ID_COLOR, QOS0);
-            mqttClient.subscribe(TOPIC_LED_G_COLOR, QOS0);
+            mqttClient.subscribe(TOPIC_LED_ROOM, QOS0);
+            mqttClient.subscribe(TOPIC_LED_ID, QOS0);
+            mqttClient.subscribe(TOPIC_LED_G, QOS0);
         }
 
-        if(IS_TEMP_SENSOR) {
-            // TODO
-        }
+        // if(IS_DHT) {
+        //     mqttClient.subscribe(TOPIC_DHT_ID_TEMP, QOS0);
+        // }
     });
 
     mqttClient.connect();
@@ -255,20 +270,43 @@ void setupLeds() {
 
     FastLED.addLeds<LED_TYPE, PIN_LED, COLOR_ORDER>(leds, NUM_LEDS);
     FastLED.setBrightness(BRIGHTNESS);
+    FastLED.showColor(CRGB(255,255,255));
 
     Serial.println("[setupLeds] complete.");
 }
 
-
+// 
+// DHT
 //
-// TICKERS
-//
-void setupTickers() {
-
-    ticker.attach(10, []() {
-        Serial.println("[setupTickers] tick.");
-    });
+void setupDHT() {
+    dht.begin();
 }
+
+// can't be called in interrupts
+void dhtRead() {
+    if(IS_DHT) {
+        float tempCelcius = dht.readTemperature();
+        float humidity = dht.readHumidity();
+
+        if (isnan(humidity) || isnan(tempCelcius)) {
+            Serial.println("Failed to read from DHT sensor!");
+            return;
+        } else {
+            char c[50];
+            char cc[50];
+
+            sprintf(c, "%.2f", tempCelcius);
+            sprintf(cc, "%.2f", humidity);
+
+            dhtTemp = c;
+            dhtHumidity = cc;
+
+            Serial.printf("read temperature: %.2f, humidity: %.2f\n", tempCelcius, humidity);
+            Serial.printf("saved temperature: %.2f, humidity: %.2f\n", dhtTemp, dhtHumidity);
+        }
+    }
+}
+
 
 //
 // MAIN
@@ -284,31 +322,21 @@ void setup() {
         return;
     }
 
-    // pinMode(PIN_LED, OUTPUT);
-    // pinMode(PIN_PIR, INPUT);
-    // pinMode(PIN_DHT, INPUT);
-
-    // dht.begin();
-
     setupWifi();
     setupServer();
     setupMQTT();
-    setupTickers();
     if(IS_LED) {
         setupLeds();
+    }
+    if(IS_DHT) {
+        setupDHT();
+        dhtRead();
     }
 
     Serial.println("[setup] complete.");
 }
 
 void loop() {
-    // delay(1000);
-    // ws.textAll("loop");
+    delay(1000*60*2); //2 minutes
+    dhtRead();
 }
-
-// char* concat(char* str1, char* str2) {
-//     char* concatenated = (char*)malloc(strlen(str1)+strlen(str2));
-//     strcpy(str1, concatenated);
-//     strcat(concatenated, str2);
-//     return concatenated;
-// }
